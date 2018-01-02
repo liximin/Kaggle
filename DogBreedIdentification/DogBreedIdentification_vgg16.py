@@ -5,7 +5,8 @@ from PIL import Image
 from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 IMAGE_SIZE = 224
-train_batch_size = 1
+train_batch_size = 16
+
 
 def convert_to_tfrecord(rootpath, target_record_dir, target_record_filename):
     target_tfrecord_file = target_record_dir+"/"+target_record_filename+".tfrecords"
@@ -26,10 +27,11 @@ def convert_to_tfrecord(rootpath, target_record_dir, target_record_filename):
             example = tf.train.Example(
                 features=tf.train.Features(feature={
                     "label": tf.train.Feature(int64_list=
-                                              tf.train.Int64List(value=train_labels[train_labels["id"]==label]['breed'].ravel().reshape(-1)[0])), 
+                                              tf.train.Int64List(value=train_labels[train_labels["id"] == label]['breed'].ravel().reshape(-1)[0])),
                     "img_raw": tf.train.Feature(bytes_list=tf.train.BytesList(value=[img_raw]))}))
             writer.write(example.SerializeToString())
     writer.close()
+
 
 def conv_op(input_op, name, kh, kw, n_out, dh, dw, p):
     n_in = input_op.get_shape()[-1].value
@@ -43,12 +45,14 @@ def conv_op(input_op, name, kh, kw, n_out, dh, dw, p):
         biases = tf.Variable(bias_init_val, trainable=True, name='b')
         z = tf.nn.bias_add(conv, biases)
         # add L2 loss
-        weight_loss = tf.multiply(tf.nn.l2_loss(kernel), 0.001, name="weight_loss")
-        weight_loss = tf.reduce_mean(weight_loss)
-        tf.add_to_collection('losses', weight_loss)
+        # weight_loss = tf.multiply(tf.nn.l2_loss(kernel), 0.001, name="weight_loss")
+        # weight_loss = tf.reduce_mean(weight_loss)
+        # tf.add_to_collection('losses', weight_loss)
+
         activation = tf.nn.relu(z, name=scope)
         p += [kernel, biases]
         return activation
+
 
 def fc_op(input_op, name, n_out, p, wl2=0.004, relu_tag=True):
     n_in = input_op.get_shape()[-1].value
@@ -57,17 +61,19 @@ def fc_op(input_op, name, n_out, p, wl2=0.004, relu_tag=True):
         kernel = tf.get_variable(scope+"w", shape=[n_in, n_out], dtype=tf.float32,
                                  initializer=tf.contrib.layers.xavier_initializer())
         if relu_tag is True:
-            biases = tf.Variable(tf.constant(0.001, shape=[n_out], dtype=tf.float32), name="b")
+            biases = tf.Variable(tf.constant(0.1, shape=[n_out], dtype=tf.float32), name="b")
             activation = tf.nn.relu_layer(input_op, kernel, biases, name=scope)
         else:
-            biases = tf.Variable(tf.constant(0.001, shape=[n_out], dtype=tf.float32), name="b")
+            biases = tf.Variable(tf.constant(0.1, shape=[n_out], dtype=tf.float32), name="b")
             activation = tf.matmul(input_op, kernel) + biases
         # add L2 loss
-        weight_loss = tf.multiply(tf.nn.l2_loss(kernel), wl2, name="weight_loss")
-        weight_loss = tf.reduce_mean(weight_loss)
-        tf.add_to_collection('losses', weight_loss)
+        # weight_loss = tf.multiply(tf.nn.l2_loss(kernel), wl2, name="weight_loss")
+        # weight_loss = tf.reduce_mean(weight_loss)
+        # tf.add_to_collection('losses', weight_loss)
+
         p += [kernel, biases]
         return activation
+
 
 def mpool_op(input_op, name, kh, kw, dh, dw):
     return tf.nn.max_pool(input_op,
@@ -76,34 +82,35 @@ def mpool_op(input_op, name, kh, kw, dh, dw):
                           padding="SAME",
                           name=name)
 
+
 def inference_op(input_op, keep_prob):
     p = []
     conv1_1 = conv_op(input_op, name="conv1_1", kh=3, kw=3, n_out=64, dh=1, dw=1, p=p)
     conv1_2 = conv_op(conv1_1, name="conv1_2", kh=3, kw=3, n_out=64, dh=1, dw=1, p=p)
-    conv1_2_dropout = tf.nn.dropout(conv1_2, 1.0, name="conv1_2_dropout")
+    conv1_2_dropout = tf.nn.dropout(conv1_2, keep_prob, name="conv1_2_dropout")
     pool1 = mpool_op(conv1_2_dropout, name="pool1", kh=2, kw=2, dw=2, dh=2)
 
     conv2_1 = conv_op(pool1, name="conv2_1", kh=3, kw=3, n_out=128, dh=1, dw=1, p=p)
     conv2_2 = conv_op(conv2_1, name="conv2_2", kh=3, kw=3, n_out=128, dh=1, dw=1, p=p)
-    conv2_2_dropout = tf.nn.dropout(conv2_2, 1.0, name="conv2_2_dropout")
+    conv2_2_dropout = tf.nn.dropout(conv2_2, keep_prob, name="conv2_2_dropout")
     pool2 = mpool_op(conv2_2_dropout, name="pool2", kh=2, kw=2, dw=2, dh=2)
 
     conv3_1 = conv_op(pool2, name="conv3_1", kh=3, kw=3, n_out=256, dh=1, dw=1, p=p)
     conv3_2 = conv_op(conv3_1, name="conv3_2", kh=3, kw=3, n_out=256, dh=1, dw=1, p=p)
     conv3_3 = conv_op(conv3_2, name="conv3_3", kh=3, kw=3, n_out=256, dh=1, dw=1, p=p)
-    conv3_3_dropout = tf.nn.dropout(conv3_3, 1.0, name="conv3_3_dropout")
+    conv3_3_dropout = tf.nn.dropout(conv3_3, keep_prob, name="conv3_3_dropout")
     pool3 = mpool_op(conv3_3_dropout, name="pool3", kh=2, kw=2, dw=2, dh=2)
 
     conv4_1 = conv_op(pool3, name="conv4_1", kh=3, kw=3, n_out=512, dh=1, dw=1, p=p)
     conv4_2 = conv_op(conv4_1, name="conv4_2", kh=3, kw=3, n_out=512, dh=1, dw=1, p=p)
     conv4_3 = conv_op(conv4_2, name="conv4_3", kh=3, kw=3, n_out=512, dh=1, dw=1, p=p)
-    conv4_3_dropout = tf.nn.dropout(conv4_3, 1.0, name="conv4_3_dropout")
+    conv4_3_dropout = tf.nn.dropout(conv4_3, keep_prob, name="conv4_3_dropout")
     pool4 = mpool_op(conv4_3_dropout, name="pool4", kh=2, kw=2, dw=2, dh=2)
 
     conv5_1 = conv_op(pool4, name="conv5_1", kh=3, kw=3, n_out=512, dh=1, dw=1, p=p)
     conv5_2 = conv_op(conv5_1, name="conv5_2", kh=3, kw=3, n_out=512, dh=1, dw=1, p=p)
     conv5_3 = conv_op(conv5_2, name="conv5_3", kh=3, kw=3, n_out=512, dh=1, dw=1, p=p)
-    conv5_3_dropout = tf.nn.dropout(conv5_3, 1.0, name="conv5_3_dropout")
+    conv5_3_dropout = tf.nn.dropout(conv5_3, keep_prob, name="conv5_3_dropout")
     pool5 = mpool_op(conv5_3_dropout, name="pool5", kh=2, kw=2, dw=2, dh=2)
 
     shp = pool5.get_shape()
@@ -111,13 +118,12 @@ def inference_op(input_op, keep_prob):
     resh1 = tf.reshape(pool5, [-1, flattened_shape], name="resh1")
 
     fc6 = fc_op(resh1, name="fc6", n_out=4096, p=p, wl2=0.004)
-    fc6_drop = tf.nn.dropout(fc6, keep_prob, name="fc6_drop")
+    #  fc6_drop = tf.nn.dropout(fc6, keep_prob, name="fc6_drop")
 
-    fc7 = fc_op(fc6_drop, name="fc7", n_out=4096, p=p, wl2=0.004)
-    fc7_drop = tf.nn.dropout(fc7, keep_prob, name="fc7_drop")
+    fc7 = fc_op(fc6, name="fc7", n_out=4096, p=p, wl2=0.004)
+    #  fc7_drop = tf.nn.dropout(fc7, keep_prob, name="fc7_drop")
 
-
-    fc8 = fc_op(fc7_drop, name="fc8", n_out=120, p=p)
+    fc8 = fc_op(fc7, name="fc8", n_out=120, p=p, relu_tag=False)
     softmax = tf.nn.softmax(fc8)
     prediction = tf.argmax(softmax, 1)
     return prediction, softmax, fc8, p
@@ -132,12 +138,14 @@ def loss(logits, labels):
     tf.add_to_collection('losses', cross_entropy_mean)
     return tf.add_n(tf.get_collection('losses'), name='total_loss')
 
+
 def read_tfrecord(filenames, batch_num):
     read_tfrecord_dataset = tf.contrib.data.TFRecordDataset(filenames)
     read_tfrecord_dataset = read_tfrecord_dataset.map(_parse_function)
     read_tfrecord_dataset = read_tfrecord_dataset.repeat(10)
     read_tfrecord_dataset = read_tfrecord_dataset.batch(batch_num)
     return read_tfrecord_dataset
+
 
 def save_model(sess, variable_list, checkpointfile):
     saverdict = {}
@@ -146,6 +154,8 @@ def save_model(sess, variable_list, checkpointfile):
     saver = tf.train.Saver(saverdict)
     save_path = saver.save(sess, checkpointfile)
     print("model saved in the "+save_path)
+
+
 def _parse_function(filenames):
     features = {"img_raw": tf.FixedLenFeature([], tf.string),
                 "label": tf.FixedLenFeature(1, tf.int64)}
@@ -155,15 +165,15 @@ def _parse_function(filenames):
 
 if __name__ == '__main__':
     train_labels = pd.read_csv("./data/labels.csv")
-    labels_str   = pd.read_csv("./data/sample_submission.csv").drop("id", axis = 1).columns.tolist()
+    labels_str = pd.read_csv("./data/sample_submission.csv").drop("id", axis=1).columns.tolist()
     labels_str_lenth=len(labels_str)
-    labels_map={}
-    for index,labels_index in enumerate(labels_str):
-        labels_map[labels_index]=[index]
-    train_labels['breed']=train_labels['breed'].map(labels_map)
+    labels_map = {}
+    for index, labels_index in enumerate(labels_str):
+        labels_map[labels_index] = [index]
+    train_labels['breed'] = train_labels['breed'].map(labels_map)
 
-    print( train_labels[train_labels["id"]=='fa2a33c1dc8b39ad51738408b289a0de']['breed'].ravel().reshape(-1)[0] )
-    print( train_labels[train_labels["id"]=='fa2a33c1dc8b39ad51738408b289a0de']['breed'].ravel().reshape(-1)[0][0])
+    print(train_labels[train_labels["id"] == 'fa2a33c1dc8b39ad51738408b289a0de']['breed'].ravel().reshape(-1)[0])
+    print(train_labels[train_labels["id"] == 'fa2a33c1dc8b39ad51738408b289a0de']['breed'].ravel().reshape(-1)[0][0])
     convert_to_tfrecord("./data/train", "./process_workspace", "TrainSet")
     dataset = read_tfrecord(["./process_workspace/TrainSet.tfrecords"], train_batch_size)
     keep_prod = tf.placeholder(tf.float32)
@@ -173,7 +183,7 @@ if __name__ == '__main__':
     # softmax output use
     prediction, softmax, fc8, p = inference_op(image_holder, keep_prod)
     loss = loss(fc8, label_holder)
-    train_op = tf.train.AdamOptimizer(1e-5).minimize(loss)
+    train_op = tf.train.AdamOptimizer(1e-3).minimize(loss)
     with tf.Session() as sess:
         iterator = dataset.make_initializable_iterator()
         next_element = iterator.get_next()
@@ -188,32 +198,34 @@ if __name__ == '__main__':
             saver.restore(sess, "./process_workspace/DogBreedIdentificationVgg16_model.ckpt")
             print(p[0], sess.run(p[-1]))
             print("Model restored.\n")
-        Step_Continue = 0
+        Step_Continue = 20
         step = -1
                                                                                                                                                                                                                                                                                                         # end in 800
-        for step in range(10):
+        for step in range(220):
             if step < Step_Continue:
                 sess.run(next_element)
                 continue
             print("########## train  %d step(s) start: #######" % step, end="\n")
             try:
                 preprocess_batch_img = sess.run(next_element)
-                train_softmax, _,  result_loss = sess.run([softmax,train_op, loss], feed_dict={
-                    image_holder: preprocess_batch_img[0].reshape(-1, IMAGE_SIZE, IMAGE_SIZE, 3)/255 - 0.5,
+                train_fc8, train_softmax, _,  result_loss = sess.run([fc8, softmax, train_op, loss], feed_dict={
+                    image_holder: preprocess_batch_img[0].reshape(-1, IMAGE_SIZE, IMAGE_SIZE, 3),
                     label_holder: preprocess_batch_img[1].reshape(-1),
-                    keep_prod: 0.5
+                    keep_prod: 0.6
                 })
                 print("result_loss:")
                 print(result_loss)
                 print("train_softmax:")
                 print(train_softmax)
+                print("train_fc8:")
+                print(train_fc8)
+                print("img-label:")
+                print(preprocess_batch_img[1].reshape(-1))
             except tf.errors.OutOfRangeError:
                 save_model(sess, p, "./process_workspace/DogBreedIdentificationVgg16_model.ckpt")
                 break
             if step % 5 == 0:
                 save_model(sess, p, "./process_workspace/DogBreedIdentificationVgg16_model.ckpt")
-        save_model(sess, p, "./process_workspace/CatsDogsVgg16_model.ckpt")
+        save_model(sess, p, "./process_workspace/DogBreedIdentificationVgg16_model.ckpt")
         print("########## train end at  %d  range: #######" % (step+1), end="\n")
         print(sess.run(p[-1]))
-
- 
